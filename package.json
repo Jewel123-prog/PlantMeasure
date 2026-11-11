@@ -1,0 +1,12 @@
+{
+  "name": "plantmeasure",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Mobile-first web app that estimates plant morphological traits from a photo beside a reference object.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check measure.js && node --check sw.js && node --check worker/worker.js && node --check worker/prompt.js"
+  },
+  "engines": { "node": ">=20" }
+}

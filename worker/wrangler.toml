@@ -1,0 +1,8 @@
+name = "plantmeasure"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+# Comma-separated list of origins allowed to call this proxy (scheme + host, no path, no trailing slash).
+ALLOWED_ORIGINS = "https://jewel123-prog.github.io"
+# MODEL = "claude-sonnet-5-5"   # optional override; record the model used in your methods
