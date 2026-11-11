@@ -5,6 +5,7 @@
 <link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#2f7d3b">
 <meta name="apple-mobile-web-app-capable" content="yes"><link rel="icon" href="icon.svg"><link rel="apple-touch-icon" href="icon-192.png">
 <script src="config.js"></script>
+<script src="measure.js"></script>
 <style>
 :root{--bg:#f6f8f3;--card:#fff;--tx:#1d2b1f;--mu:#5d6d60;--ac:#2f7d3b;--bd:#d9e1d6;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121a14;--card:#1b261e;--tx:#e8efe6;--mu:#9bb09e;--ac:#58b868;--bd:#2c3b2f;color-scheme:dark}}
@@ -30,6 +31,10 @@ td,th{padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;white-sp
 <h1>🌿 PlantMeasure</h1>
 <p class="s">Photograph a plant next to an object of known size, and AI estimates leaf count, health, leaf size, stem height and diameter.</p>
 
+<div class="c" id="setup" style="display:none"><strong>One-time setup</strong>
+<p class="s">This copy has no analysis server configured. Paste your proxy URL (see README), or set <code>PROXY_URL</code> in <code>config.js</code>.</p>
+<input id="pu" type="url" placeholder="https://plantmeasure.your-name.workers.dev" inputmode="url"><div style="margin-top:8px"><button id="ps">Save</button></div></div>
+
 <div class="c">
 <label>Plant (optional)</label><input id="sp" placeholder="e.g. cassava, tomato, Ocimum">
 <div class="r"><div><label>Reference object</label><input id="rn" value="ruler"></div>
@@ -47,75 +52,73 @@ td,th{padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;white-sp
 </main>
 <script>
 const $=i=>document.getElementById(i);
+const APP_VERSION='0.2.0';
+const CFG=window.PM_CONFIG||{};
+const SHAPE_K=Number.isFinite(CFG.SHAPE_FACTOR)?CFG.SHAPE_FACTOR:PMMeasure.DEFAULT_SHAPE_FACTOR;
 let blob=null,base=null,rows=[];
 try{rows=JSON.parse(localStorage.getItem('pm_rows')||'[]')}catch(e){}
+const proxyUrl=()=>{let u=CFG.PROXY_URL||'';if(!u){try{u=localStorage.getItem('pm_proxy')||''}catch(e){}}return /^https:\/\//.test(u)?u:''};
 const cv=$('cv'),cx=cv.getContext('2d');
+function showSetup(){$('setup').style.display=proxyUrl()?'none':'block'}
+$('ps').onclick=()=>{const u=$('pu').value.trim();
+  if(!/^https:\/\/[^\s]+$/.test(u)){$('msg').textContent='Enter a full https:// URL.';return}
+  try{localStorage.setItem('pm_proxy',u)}catch(e){}
+  showSetup();$('msg').textContent='Saved.'};
 $('f').onchange=e=>{
   const fl=e.target.files[0];if(!fl)return;
-  const im=new Image();im.onload=()=>{
+  $('go').disabled=true;blob=null;
+  const url=URL.createObjectURL(fl),im=new Image();
+  im.onerror=()=>{URL.revokeObjectURL(url);$('msg').textContent='Could not read that image. Try a JPEG or PNG photo.'};
+  im.onload=()=>{
     const s=Math.min(1,1280/Math.max(im.width,im.height));
     cv.width=Math.round(im.width*s);cv.height=Math.round(im.height*s);
     cx.drawImage(im,0,0,cv.width,cv.height);cv.style.display='block';
-    base=cx.getImageData(0,0,cv.width,cv.height);
-    cv.toBlob(b=>{blob=b;$('go').disabled=false;$('msg').textContent='Photo ready.'},'image/jpeg',.85);
-  };im.src=URL.createObjectURL(fl);
+    base=cx.getImageData(0,0,cv.width,cv.height);URL.revokeObjectURL(url);
+    cv.toBlob(b=>{blob=b;$('go').disabled=!b;$('msg').textContent=b?'Photo ready.':'Could not prepare the photo.'},'image/jpeg',.85);
+  };im.src=url;
 };
-const D=(a,b)=>Math.hypot((a[0]-b[0])*cv.width,(a[1]-b[1])*cv.height);
 function line(a,b,col,t){
   cx.strokeStyle=col;cx.fillStyle=col;cx.lineWidth=Math.max(2,cv.width/320);
   cx.beginPath();cx.moveTo(a[0]*cv.width,a[1]*cv.height);cx.lineTo(b[0]*cv.width,b[1]*cv.height);cx.stroke();
   cx.font='bold '+Math.max(12,cv.width/50)+'px sans-serif';
   if(t)cx.fillText(t,(a[0]+b[0])/2*cv.width+4,(a[1]+b[1])/2*cv.height-4);
 }
-const ok=p=>Array.isArray(p)&&p.length==2&&p.every(q=>Array.isArray(q)&&q.length==2&&q.every(Number.isFinite));
-function parse(t){const m=t.match(/\{[\s\S]*\}/);return JSON.parse(m?m[0]:t)}
+const f=v=>v==null?'–':v;
 $('go').onclick=async()=>{
   const msg=$('msg');$('go').disabled=true;msg.textContent='Analyzing…';
+  const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),60000);
   try{
-    const URL_=(window.PM_CONFIG||{}).PROXY_URL;
-    if(!URL_){msg.textContent='Set PROXY_URL in config.js (see README).';return}
-    const rn=$('rn').value||'reference object';
-    const prompt=`You are a plant phenotyping assistant. Analyze the attached photo${$('sp').value?' of '+$('sp').value:''}. A reference object (${rn}, known length ${$('rl').value} cm) may be visible.
-All coordinates are normalized [x,y] in 0-1 (origin top-left). Reply with ONLY JSON, no markdown:
-{"reference":{"found":bool,"p1":[x,y],"p2":[x,y]} (endpoints of the reference object's known-length dimension),
-"leaf_count":int,"color":"short description of leaf color","health":"good|fair|poor","health_notes":"one sentence (damage, chlorosis, spots, wilting)",
-"leaves":[{"length":[[x,y],[x,y]],"width":[[x,y],[x,y]]}] (up to 4 clearest, fully visible leaves; length along midrib base to tip, width at the widest point),
-"stem":{"height":[[x,y],[x,y]],"diameter":[[x,y],[x,y]]} (base to top; diameter across stem) or null,
-"fruit":{"diameter":[[x,y],[x,y]]} or null,"confidence":"low|medium|high"}
-Be precise with endpoints. Omit anything you cannot see rather than guessing.`;
-    const b64=await new Promise(ok=>{const fr=new FileReader();fr.onload=()=>ok(fr.result.split(',')[1]);fr.readAsDataURL(blob)});
-    const resp=await fetch(URL_,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image:b64,prompt})});
-    const t=await resp.json();if(!resp.ok)throw new Error(t.error||('HTTP '+resp.status));
-    const j=parse(t.text);
+    const URL_=proxyUrl();
+    if(!URL_){showSetup();msg.textContent='Set up the analysis server first (see the card above).';return}
+    const refCm=PMMeasure.validRefLength($('rl').value);
+    if(!refCm){msg.textContent='Enter the reference object length in cm (greater than 0).';return}
+    const b64=await new Promise((ok,no)=>{const fr=new FileReader();fr.onload=()=>ok(String(fr.result).split(',')[1]);fr.onerror=no;fr.readAsDataURL(blob)});
+    const resp=await fetch(URL_,{method:'POST',signal:ctrl.signal,headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({image:b64,species:$('sp').value,refName:$('rn').value,refCm})});
+    let t={};try{t=await resp.json()}catch(e){}
+    if(!resp.ok)throw new Error(t.error||('Server error '+resp.status));
+    const j=PMMeasure.parseModelJson(t.text);
+    const a=PMMeasure.analyze(j,cv.width,cv.height,refCm,{shapeFactor:SHAPE_K});
     cx.putImageData(base,0,0);
-    const R=j.reference,have=R&&R.found&&ok([R.p1,R.p2]);
-    const sc=have?parseFloat($('rl').value)/D(R.p1,R.p2):null;
-    const cm=p=>ok(p)&&sc?+(D(p[0],p[1])*sc).toFixed(1):null;
-    if(have)line(R.p1,R.p2,'#ffd400','ref');
-    const lv=(j.leaves||[]).map((l,i)=>{
-      const L=cm(l.length),W=cm(l.width);
-      if(ok(l.length))line(l.length[0],l.length[1],'#ff4d4d','L'+(i+1)+(L?' '+L:''));
-      if(ok(l.width))line(l.width[0],l.width[1],'#4da6ff','W'+(i+1)+(W?' '+W:''));
-      return{L,W,A:L&&W?+(L*W*0.7).toFixed(1):null};
-    });
-    const H=j.stem?cm(j.stem.height):null,SD=j.stem?cm(j.stem.diameter):null,FD=j.fruit?cm(j.fruit.diameter):null;
-    if(j.stem&&ok(j.stem.height))line(j.stem.height[0],j.stem.height[1],'#7CFC00','H'+(H?' '+H:''));
-    if(j.stem&&ok(j.stem.diameter))line(j.stem.diameter[0],j.stem.diameter[1],'#ff9f1c',SD?SD+'':'');
-    if(j.fruit&&ok(j.fruit.diameter))line(j.fruit.diameter[0],j.fruit.diameter[1],'#ff66cc',FD?FD+'':'');
-    const avg=k=>{const v=lv.map(x=>x[k]).filter(x=>x!=null);return v.length?+(v.reduce((a,b)=>a+b,0)/v.length).toFixed(1):null};
-    const f=v=>v==null?'–':v;
-    const row={time:new Date().toLocaleString(),plant:$('sp').value||'',leaves:j.leaf_count,health:j.health,color:j.color,leafL:avg('L'),leafW:avg('W'),leafA:avg('A'),height:H,stemD:SD,fruitD:FD,conf:j.confidence};
+    a.segments.forEach(s=>line(s.a,s.b,s.color,s.label));
+    const row={time:new Date().toLocaleString(),plant:$('sp').value||'',leaves:a.leafCount,health:a.health,color:a.color,
+      leafL:a.leafL,leafW:a.leafW,leafA:a.leafA,height:a.height,stemD:a.stemD,fruitD:a.fruitD,conf:a.confidence,
+      refName:$('rn').value||'',refCm,shapeK:a.shapeFactor,model:t.model||'',appVersion:APP_VERSION};
     rows.unshift(row);try{localStorage.setItem('pm_rows',JSON.stringify(rows.slice(0,200)))}catch(e){}
-    const r=$('res');r.style.display='block';
-    r.innerHTML='<strong>Results</strong><div class="k">'+
-      [['Leaves',f(j.leaf_count)],['Health',f(j.health)],['Avg leaf L (cm)',f(row.leafL)],['Avg leaf W (cm)',f(row.leafW)],['Est. leaf area (cm²)',f(row.leafA)],['Height (cm)',f(H)],['Stem Ø (cm)',f(SD)],['Fruit Ø (cm)',f(FD)]]
-      .map(x=>'<div><b></b><span>'+x[0]+'</span></div>').join('')+'</div><p class="s" id="nt"></p>';
-    r.querySelectorAll('.k b').forEach((b,i)=>b.textContent=[f(j.leaf_count),f(j.health),f(row.leafL),f(row.leafW),f(row.leafA),f(H),f(SD),f(FD)][i]);
-    $('nt').textContent=(have?'':'Reference not found, so sizes are unavailable. Retake with the reference clearly visible. ')+'Color: '+f(j.color)+'. '+f(j.health_notes)+' Confidence: '+f(j.confidence)+'. Leaf area uses 0.7 × L × W, a rough shape factor. Estimates only; validate against manual measurements.';
-    msg.textContent='Done. Colored lines show what was measured.';
+    const r=$('res');r.style.display='block';r.textContent='';
+    const h=document.createElement('strong');h.textContent='Results';r.appendChild(h);
+    const k=document.createElement('div');k.className='k';
+    [['Leaves',a.leafCount],['Health',a.health],['Avg leaf L (cm)',a.leafL],['Avg leaf W (cm)',a.leafW],['Est. leaf area (cm²)',a.leafA],['Height (cm)',a.height],['Stem Ø (cm)',a.stemD],['Fruit Ø (cm)',a.fruitD]].forEach(x=>{
+      const d=document.createElement('div'),b=document.createElement('b'),s=document.createElement('span');
+      b.textContent=f(x[1]);s.textContent=x[0];d.append(b,s);k.appendChild(d)});
+    r.appendChild(k);
+    const n=document.createElement('p');n.className='s';
+    n.textContent=(a.warning?a.warning+' ':'')+'Color: '+f(a.color)+'. '+f(a.notes)+' Model confidence: '+f(a.confidence)+'. Leaf area uses '+a.shapeFactor+' × L × W, a rough shape factor. Estimates only; validate against manual measurements.';
+    r.appendChild(n);
+    msg.textContent=a.refOk?'Done. Colored lines show what was measured.':'Sizes withheld: '+a.warning;
     draw();
-  }catch(e){msg.textContent='Could not analyze: '+(e&&e.message?e.message:'try a clearer photo.')}
-  finally{$('go').disabled=false}
+  }catch(e){msg.textContent='Could not analyze: '+(e&&e.name==='AbortError'?'the request timed out.':(e&&e.message?e.message:'try a clearer photo.'))}
+  finally{clearTimeout(timer);$('go').disabled=!blob}
 };
 function draw(){
   const h=['Time','Plant','Leaves','Health','L','W','Area','Height','Stem Ø'];
@@ -124,12 +127,11 @@ function draw(){
   rows.slice(0,30).forEach(r=>{const tr=t.insertRow();
     [r.time,r.plant,r.leaves,r.health,r.leafL,r.leafW,r.leafA,r.height,r.stemD].forEach(v=>tr.insertCell().textContent=v==null?'–':v)});
 }
-$('dl').onclick=async()=>{
-  const k=['time','plant','leaves','health','color','leafL','leafW','leafA','height','stemD','fruitD','conf'];
-  const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
-  const csv=k.join(',')+'\n'+rows.map(r=>k.map(x=>q(r[x])).join(',')).join('\n');
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='plant-measurements.csv';a.click();
+$('dl').onclick=()=>{
+  const keys=['time','plant','leaves','health','color','leafL','leafW','leafA','height','stemD','fruitD','conf','refName','refCm','shapeK','model','appVersion'];
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([PMMeasure.toCsv(rows,keys)],{type:'text/csv'}));
+  a.download='plant-measurements.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 };
-draw();
+draw();showSetup();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script></body></html>

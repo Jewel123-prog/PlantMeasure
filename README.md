@@ -1,27 +1,50 @@
 # PlantMeasure
-Photograph a plant next to an object of known size, and AI estimates leaf count, health, leaf size, stem height and diameter.
-Mobile-friendly web app (installable PWA) that estimates leaf count, health, leaf size, stem height and diameter from a photo taken beside a reference object of known length. AI vision runs through a small proxy so your API key never reaches the browser.
+
+Mobile-first web app (installable PWA) that estimates **leaf count, leaf colour and health, leaf length/width/area, stem height and diameter, and fruit diameter** from one photo taken beside a reference object of known length. AI vision runs through a small server-side proxy, so your API key never reaches the browser.
+
+> Results are estimates. Validate against manual measurements before relying on them for research.
 
 ## Structure
-- `index.html`, `config.js`, `sw.js`, `manifest.webmanifest`, `icon.svg`: the front end (GitHub Pages)
-- `worker/`: Cloudflare Worker proxy that calls the Anthropic API
+| Path | Purpose |
+| --- | --- |
+| `index.html`, `config.js`, `sw.js`, `manifest.webmanifest`, icons | Front end (served by GitHub Pages) |
+| `measure.js` | Measurement core (pixel-to-cm conversion, area, CSV); unit tested |
+| `worker/` | Cloudflare Worker proxy that holds the API key and holds the prompt |
+| `tests/` | Unit tests (`npm test`, Node 20+, no dependencies) |
+| `.github/workflows/ci.yml` | Runs syntax checks and tests on every push and pull request |
 
 ## Deploy
-1. **Proxy** (free Cloudflare account, Node installed):
+1. **Proxy** (free Cloudflare account, Node 20+ installed):
    ```
    cd worker
    npx wrangler login
    npx wrangler secret put ANTHROPIC_API_KEY
    npx wrangler deploy
    ```
-   Edit `ALLOWED_ORIGIN` in `wrangler.toml` to `https://<your-username>.github.io` first. Copy the worker URL it prints.
-2. Put that URL in `config.js` as `PROXY_URL`.
-3. **Front end**: push this repo to GitHub, then Settings > Pages > Deploy from branch `main`, folder `/ (root)`.
-4. On your phone open `https://<your-username>.github.io/<repo>/`, then "Add to Home Screen".
+   `ALLOWED_ORIGINS` in `worker/wrangler.toml` is already set to `https://jewel123-prog.github.io`. Change it if your Pages address differs (scheme + host only, no path). Copy the worker URL it prints.
+2. **Tell the app where the proxy is**, either way:
+   - edit `PROXY_URL` in `config.js` and commit, or
+   - open the app once and paste the URL into the "One-time setup" card (saved on that device only).
+3. **Front end**: Settings > Pages > Deploy from branch `main`, folder `/ (root)`.
+4. On your phone open `https://jewel123-prog.github.io/PlantMeasure/` and choose "Add to Home Screen".
 
-## Notes
-- Needs internet. Camera capture uses the phone's native camera.
-- Keep the reference object in the same plane as the plant part and shoot straight-on. Validate against manual measurements.
-- Set a spending limit on your API key; the proxy has basic size limits only.
-- Optional: add `icon-192.png` / `icon-512.png` (PNG versions of `icon.svg`) for iOS home-screen icons.
+## Security notes
+- The proxy only accepts requests from `ALLOWED_ORIGINS`, JPEG images up to about 4.5 MB, and a reference length between 0 and 1000 cm. The model prompt is fixed on the server; clients cannot send their own.
+- Origin checks stop other websites, not scripts that fake the header. **Set a monthly spend limit on your API key** and add a Cloudflare rate-limiting rule (Security > WAF > Rate limiting) for the worker route.
+- CSV export neutralizes spreadsheet formula injection.
 
+## Accuracy tips
+- Put the reference object in the same plane as the plant part and shoot straight-on.
+- The reference must span at least 5% of the photo's longer side, otherwise sizes are withheld.
+- Leaf area = `SHAPE_FACTOR` x length x width (default 0.7). Calibrate it per species in `config.js`.
+- Each CSV row records the model, app version, reference and shape factor so results can be reproduced and reported.
+
+## Development
+```
+npm test        # unit tests
+npm run check   # syntax checks
+```
+Run the site locally with any static server, e.g. `python3 -m http.server`.
+
+## Licence
+Apache-2.0, see `LICENSE`.

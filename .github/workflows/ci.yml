@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Syntax check
+        run: npm run check
+      - name: Unit tests
+        run: npm test
+      - name: Required static files exist
+        run: |
+          for f in index.html measure.js config.js sw.js manifest.webmanifest icon.svg icon-192.png icon-512.png worker/worker.js worker/wrangler.toml; do
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+      - name: No API keys committed
+        run: |
+          if grep -rIE "sk-ant-[A-Za-z0-9_-]{10,}" --exclude-dir=.git --exclude-dir=node_modules . ; then
+            echo "Possible API key found"; exit 1
+          fi
